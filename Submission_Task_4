@@ -1,0 +1,140 @@
+#Submission task: 
+#4. EN‐TEx ATAC‐seq data: downstream analyses
+#Move to folder ATAC-seq, and create folders to store bigBed data files and peaks analyses files. Make sure the files are organized in a consistent way as done for ChIP-seq.
+ls ATAC-seq/
+mkdir ATAC-seq/analyses
+mkdir ATAC-seq/annotation
+mkdir ATAC-seq/data
+# Up until this point I have now created the same subfolders as the ones used in the ChIP-Seq tutorial
+#Retrieve from a newly generated metadata file ATAC-seq peaks (bigBed narrow, pseudoreplicated peaks, assembly GRCh38) for stomach and sigmoid_colon for the same donor used in the previous sections. Hint: have a look at what we did here. Make sure your md5sum values coincide with the ones provided by ENCODE.
+
+cd ATAC-seq/
+# From the tutorial, section 2 how to find experiments and programatically download data from ENCODE. What I did was find the same donor ENCDO451RUA, view all experiments, Biosample term name: stomach AND sigmoid colon and assay title ATAC-Seq, then I hit download and copy the URL on the same line on that downloaded metadata file
+../bin/download.metadata.sh "https://www.encodeproject.org/metadata/?replicates.library.biosample.donor.uuid=d370683e-81e7-473f-8475-7716d027849b&status=released&status=submitted&status=in+progress&biosample_ontology.term_name=stomach&biosample_ontology.term_name=sigmoid+colon&assay_title=ATAC-seq&replicates.library.biosample.donor.organism.scientific_name=Homo+sapiens&type=Experiment"
+# This command then saved a metadata.tsv file in my ATAC-seq folder
+# To inspect this saved file I can do this, to know which columns can give me the right information:
+head -1 metadata.tsv | awk 'BEGIN{FS=OFS="\t"}{for (i=1;i<=NF;i++){print $i, i}}'
+# This outputs each column name and which position it is in…
+# “bigBed narrow” is in column 2,  “pseudoreplicated_peaks” is column 5, “GRCh38” is in column 6, “stomach OR sigmoid colon” are in column 11, “ATAC-seq” is in assay, col 8
+awk -F'\t' 'NR==1 || ($2=="bigBed_narrowPeak" && $5=="pseudoreplicated_peaks" && $6=="GRCh38" && ($11=="stomach" || $11=="sigmoid_colon") && $8=="ATAC-seq")' metadata.tsv > atac_peaks_metadata.tsv
+# now I have the info I am interested in in a separate file
+awk -F'\t' 'NR>1 {print $48}' atac_peaks_metadata.tsv
+# that is what I am interested in, now I use wget to download them
+awk -F'\t' 'NR>1 {print $48}' atac_peaks_metadata.tsv | while read url; do
+    wget -P data/ "$url"
+done
+# and now I check that I have downloaded them
+ls data/
+# now check md5sum
+awk -F'\t' 'NR>1 { 
+    split($48, path_parts, "/");
+    file = path_parts[length(path_parts)];
+    print $46, "data/" file
+}' atac_peaks_metadata.tsv > expected_md5sums.txt
+# and now check them:
+md5sum -c expected_md5sums.txt
+# up to this point it seems like files are ok
+
+# I will create a txt with data from these two files for subsequent analysis
+awk 'BEGIN{FS=OFS="\t"}{print $1, $11}' atac_peaks_metadata.tsv |\
+sort -k2,2 -k1,1r |\
+sort -k2,2 -u > analyses/bigBed.peaks.ids.txt
+
+# For each tissue, run an intersection analysis using BEDTools: report 1) the number of peaks that intersect promoter regions, 2) the number of peaks that fall outside gene coordinates (whole gene body, not just the promoter regions). Hint: have a look at what we did here and here.
+
+# the goal now is to perform intersection analysis using BEDtools to determine where ATAC-seq peaks lie in relation to gene annotation
+# the steps I should follow are:
+# ensure I have all needed files: BED files of ATAC-seq peaks per tissue, BED file of promoter regions (e.g. gencode v xx protein coding/non-redundant TSS bed files), and a BED file of gene bodies (protein.coding.gene.body.bed)
+# intersect ATAC-seq peaks with promoter regions
+# intersect ATAC-seq peaks with gene bodies
+# find peaks that fall outside gene coordinates 
+
+# first I need the annotation primary assembly file
+wget -P annotation "https://www.encodeproject.org/files/gencode.v24.primary_assembly.annotation/@@download/gencode.v24.primary_assembly.annotation.gtf.gz"
+# prepare the BED file with gene coordinates of protein-coding genes
+# this is to uncompress the dile
+gunzip annotation/gencode.v24.primary_assembly.annotation.gtf.gz
+# now convert the gtf annotation file to a BED format
+# retrieve gene body coordinates of protein coding genes, remove mitochrondrial genes, move from a 1-based to a 0-based coordinate system
+awk '$3=="gene"' annotation/gencode.v24.primary_assembly.annotation.gtf |\
+grep -F "protein_coding" |\
+cut -d ";" -f1 |\
+awk 'BEGIN{OFS="\t"}{print $1, $4, $5, $10, 0, $7, $10}' |\
+sed 's/\"//g' |\
+awk 'BEGIN{FS=OFS="\t"}$1!="chrM"{$2=($2-1); print $0}' > annotation/gencode.v24.protein.coding.gene.body.bed
+
+# I also need the BED file of promoter regions
+# this is retrieved from the link provided in the tutorial in .bed format, section 5.1, I programatically download it to my annotation folder
+wget -O annotation/gencode.v24.protein.coding.non.redundant.TSS.bed \
+  https://public-docs.crg.es/rguigo/Data/bborsari/UVIC/epigenomics_course/gencode.v24.protein.coding.non.redundant.TSS.bed
+# I check now the contents of my annotation folder
+ls annotation/
+
+# now convert atac-seq files to BED files for downstream comparison
+# I will keep these files in the bed.files folder inside data
+cut -f1 atac_peaks_metadata.tsv | grep "ENCFF" |\
+while read filename; do
+  bigBedToBed data/"$filename".bigBed data/bed.files/"$filename".bed
+done
+
+# all my files for comparison are stored inside annotation folder
+# Create a folder peaks.analysis inside analyses
+mkdir analyses/peaks.analysis
+# now retrieve genes with peaks in atac-seq at the promoter region in each tissue
+# using tail to skip the header
+tail -n +2 analyses/bigBed.peaks.ids.txt | cut -f-2 |\
+while read filename tissue; do 
+  bedtools intersect -a annotation/gencode.v24.protein.coding.non.redundant.TSS.bed -b data/bed.files/"$filename".bed -u |\
+  cut -f7 |\
+  sort -u > analyses/peaks.analysis/genes.with.peaks."$tissue".ATACpeaks.txt
+done
+# verify created files
+ls analyses/peaks.analysis/
+# that is giving me unique genes with promoter peaks, I will only get gene names even if many peaks overlapped in those genes… from the cut -f7 column and removing duplicates with -u
+
+# actually, reading this again what I need is the number of peaks that intersect promoter regions
+# remember: 1) the number of peaks that intersect promoter regions
+# the format I need to use is: bedtools intersect -a ATAC_peaks.bed -b TSS.bed -u | wc -l
+# that will give me one line per peak that hits a promoter…
+tail -n +2 analyses/bigBed.peaks.ids.txt | cut -f-2 |\
+while read filename tissue; do
+  bedtools intersect -a data/bed.files/"$filename".bed \
+                     -b annotation/gencode.v24.protein.coding.non.redundant.TSS.bed -u |\
+    wc -l > analyses/peaks.analysis/"$tissue".num.peaks.in.promoters.txt
+done
+# this will actually give me the number of peaks in promoter regions..
+cat analyses/peaks.analysis/sigmoid_colon.num.peaks.in.promoters.txt
+# that gives me 47871
+cat analyses/peaks.analysis/stomach.num.peaks.in.promoters.txt
+# and that gives me 44749
+
+# now to do 2) the number of peaks that fall outside gene coordinates (whole gene body, not just the promoter regions)
+
+# since I already know about those in promoter regions, I want to see those in gene bodies (using the protein coding file) - in theory this includes all regions of genes (exons, introns, …)
+tail -n +2 analyses/bigBed.peaks.ids.txt | cut -f-2 |\
+while read filename tissue; do
+  bedtools intersect -a data/bed.files/"$filename".bed \
+                     -b annotation/gencode.v24.protein.coding.gene.body.bed -u |\
+    wc -l > analyses/peaks.analysis/"$tissue".num.peaks.in.gene.body.txt
+done
+# check again that files were created
+ls analyses/peaks.analysis/
+cat analyses/peaks.analysis/stomach.num.peaks.in.gene.body.txt
+# that gives me 69072
+cat analyses/peaks.analysis/sigmoid_colon.num.peaks.in.gene.body.txt
+# that gives me 73964
+
+# but what I actually need to report is those peaks outside of gene bodies, so I will use the -v flag from bedtools intersect..
+# “ -v	Only report those entries in A that have _no overlaps_ with B.”
+
+tail -n +2 analyses/bigBed.peaks.ids.txt | cut -f-2 |\
+while read filename tissue; do
+  bedtools intersect -a data/bed.files/"$filename".bed \
+                     -b annotation/gencode.v24.protein.coding.gene.body.bed -v |\
+    wc -l > analyses/peaks.analysis/"$tissue".num.peaks.outside.genes.txt
+done
+# then I see the end result: 
+cat analyses/peaks.analysis/sigmoid_colon.num.peaks.outside.genes.txt 
+# that gives me 37035
+cat analyses/peaks.analysis/stomach.num.peaks.outside.genes.txt
+# that gives me 34537
