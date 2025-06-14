@@ -1,1 +1,39 @@
+#5. Distal regulatory activity
+#Study distal regulatory activity
+#From section 4., you should have obtained a set of ATAC-seq peaks in stomach and sigmoid_colon that lie outside gene coordinates.
+#We will use these peaks as a starting point to build a catalogue of distal regulatory regions.
+
+## Task 1: Create a folder regulatory_elements inside epigenomics_uvic. This will be the folder where you store all your subsequent results.
+
+# if I continue from where I left.. I need to change directories cause I was in the ATAC-seq folder
+# I will go back one folder path..
+cd -
+mkdir regulatory_elements
+ls
+# I should have all my folders in here now
+# and as prep work, I need to run my missing analysis for the next point: 
+# distal peaks for stomach:
+tail -n +2 ATAC-seq/analyses/bigBed.peaks.ids.txt | cut -f-2 | while read filename tissue; do
+  if [ "$tissue" = "stomach" ]; then
+    bedtools intersect -a ATAC-seq/data/bed.files/"$filename".bed \
+                       -b ATAC-seq/annotation/gencode.v24.protein.coding.gene.body.bed -v \
+    > regulatory_elements/"$tissue".distal.ATAC.peaks.bed
+  fi
+done
+# distal peaks for sigmoid colon
+tail -n +2 ATAC-seq/analyses/bigBed.peaks.ids.txt | cut -f-2 | while read filename tissue; do
+  if [ "$tissue" = "sigmoid_colon" ]; then
+    bedtools intersect -a ATAC-seq/data/bed.files/"$filename".bed \
+                       -b ATAC-seq/annotation/gencode.v24.protein.coding.gene.body.bed -v \
+    > regulatory_elements/"$tissue".distal.ATAC.peaks.bed
+  fi
+done
+
+# check that they were properly created
+ls regulatory_elements/
+wc -l regulatory_elements/stomach.distal.ATAC.peaks.bed
+wc -l regulatory_elements/sigmoid_colon.distal.ATAC.peaks.bed
+# the numbers match what I had gotten previously
+
+## Task 2: Distal regulatory regions are usually found to be flanked by both H3K27ac and H3K4me1. From your starting catalogue of open regions in each tissue, select those that overlap peaks of H3K27ac AND H3K4me1 in the corresponding tissue. You will get a list of candidate distal regulatory elements for each tissue. How many are they?
 
