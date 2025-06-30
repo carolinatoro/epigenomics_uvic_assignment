@@ -1,0 +1,169 @@
+# Task 1: Create a folder regulatory_elements inside epigenomics_uvic. This will be the folder where you store all your subsequent results.
+# if I continue from where I left.. I need to change directories cause I was in the ATAC-seq folder
+# I will go back one folder path..
+cd -
+mkdir regulatory_elements
+ls
+# I should have all my folders in here now
+# and as prep work, I need to run my missing analysis for the next point: 
+# distal peaks for stomach:
+tail -n +2 ATAC-seq/analyses/bigBed.peaks.ids.txt | cut -f-2 | while read filename tissue; do
+  if [ "$tissue" = "stomach" ]; then
+    bedtools intersect -a ATAC-seq/data/bed.files/"$filename".bed \
+                       -b ATAC-seq/annotation/gencode.v24.protein.coding.gene.body.bed -v \
+    > regulatory_elements/"$tissue".distal.ATAC.peaks.bed
+  fi
+done
+# distal peaks for sigmoid colon
+tail -n +2 ATAC-seq/analyses/bigBed.peaks.ids.txt | cut -f-2 | while read filename tissue; do
+  if [ "$tissue" = "sigmoid_colon" ]; then
+    bedtools intersect -a ATAC-seq/data/bed.files/"$filename".bed \
+                       -b ATAC-seq/annotation/gencode.v24.protein.coding.gene.body.bed -v \
+    > regulatory_elements/"$tissue".distal.ATAC.peaks.bed
+  fi
+done
+
+# check that they were properly created
+ls regulatory_elements/
+wc -l regulatory_elements/stomach.distal.ATAC.peaks.bed
+wc -l regulatory_elements/sigmoid_colon.distal.ATAC.peaks.bed
+# the numbers match what I had gotten previously
+
+#######
+# Task 2: Distal regulatory regions are usually found to be flanked by both H3K27ac and H3K4me1. From your starting catalogue of open regions in each tissue, select those that overlap peaks of H3K27ac AND H3K4me1 in the corresponding tissue. You will get a list of candidate distal regulatory elements for each tissue. How many are they?
+
+# _____________________________________________________
+# I think from here it should be fixed:
+# _____________________________________________________
+# to clean up the code
+mkdir -p regulatory_elements/data/histone_bed_files
+mkdir -p regulatory_elements/histone_peaks/data
+# first step is I will prepare the metadata
+# Move to histone_peaks folder
+cd regulatory_elements/histone_peaks
+
+# copy metadata from ChIP-seq folder (previous analysis)
+cp ../../ChIP-seq/metadata.tsv .
+
+# filter metadata for H3K27ac and H3K4me1 peaks from donor
+awk -F'\t' 'NR==1 || ($5=="pseudoreplicated_peaks" && $8=="Histone_ChIP-seq" && $9=="/human-donors/ENCDO451RUA/" && ($23=="H3K27ac-human" || $23=="H3K4me1-human"))' metadata.tsv > histone_peaks_metadata.tsv
+
+# extract download URLs
+awk -F'\t' 'NR>1 {print $48}' histone_peaks_metadata.tsv > histone_peaks_urls.txt
+
+# download files to raw data folder
+cat histone_peaks_urls.txt | while read url; do
+    wget -P data/ "$url"
+done
+# check what happened with that download:
+ls data/
+
+# now I’ll convert to BED files
+cut -f1 histone_peaks_metadata.tsv | grep -v "File_accession" | while read id; do
+    if [ -f "data/${id}.bigBed" ]; then
+        bigBedToBed data/"${id}.bigBed" ../data/histone_bed_files/"${id}.bed"
+    elif [ -f "data/${id}.bed.gz" ]; then
+        gunzip -c data/"${id}.bed.gz" > ../data/histone_bed_files/"${id}.bed"
+    else
+        echo "Warning: File ${id} not found or unknown format"
+    fi
+done
+# check if it worked
+ls ../data/histone_bed_files # here I should have a list of all the bed files
+
+# now I need to intersect peaks (distal ATAC) with H3K…
+# here I am in the histone_peaks folder
+cd ..
+# now I am inside regulatory elements
+
+# loop over both tissues
+for tissue in stomach sigmoid_colon; do
+    # combine all H3K27ac peaks for this tissue
+    awk -F'\t' -v t="$tissue" '($23=="H3K27ac-human" && $11==t) {print $1}' histone_peaks/histone_peaks_metadata.tsv | while read id; do
+        cat data/histone_bed_files/"$id".bed
+    done > "${tissue}.H3K27ac.merged.bed"
+    # combine all H3K4me1 peaks for this tissue
+    awk -F'\t' -v t="$tissue" '($23=="H3K4me1-human" && $11==t) {print $1}' histone_peaks/histone_peaks_metadata.tsv | while read id; do
+        cat data/histone_bed_files/"$id".bed
+    done > "${tissue}.H3K4me1.merged.bed"
+    # Intersect distal ATAC peaks with both histone marks
+    bedtools intersect -a "${tissue}.distal.ATAC.peaks.bed" \
+                       -b "${tissue}.H3K27ac.merged.bed" |\
+    bedtools intersect -a - \
+                       -b "${tissue}.H3K4me1.merged.bed" \
+                       > "${tissue}.candidate.distal.regulatory.elements.bed"
+    # Show results
+    echo "$tissue candidate distal regulatory elements:"
+    wc -l "${tissue}.candidate.distal.regulatory.elements.bed"
+done
+
+# here I get these numbers: # 177428 stomach.candidate.distal.regulatory.elements.bed
+# 314864 sigmoid_colon.candidate.distal.regulatory.elements.bed
+
+
+###
+# Task 3: Focus on regulatory elements that are located on chromosome 1 (hint: to parse a file based on the value of a specific column, have a look at what we did here), and generate a file regulatory.elements.starts.tsv that contains the name of the regulatory region (i.e. the name of the original ATAC-seq peak) and the start (5') coordinate of the region.
+# should be still inside regulatory elements
+# create the output file
+echo -e "region_name\tstart_coordinate" > regulatory.elements.starts.tsv
+
+# loop over both tissues
+for tissue in stomach sigmoid_colon; do
+    awk 'BEGIN{FS=OFS="\t"} $1=="chr1"{print $4, $2}' "${tissue}.candidate.distal.regulatory.elements.bed"
+done >> regulatory.elements.starts.tsv # first col is chromosome, 4th col is peak name and 2nd col is the start coordinate
+
+# now check the result
+head regulatory.elements.starts.tsv
+wc -l regulatory.elements.starts.tsv
+
+####
+# Task 4: Focus on protein-coding genes located on chromosome 1. From the BED file of gene body coordinates that you generated here, prepare a tab-separated file called gene.starts.tsv which will store the name of the gene in the first column, and the start coordinate of the gene on the second column (REMEMBER: for genes located on the minus strand, the start coordinate will be at the 3').
+# since before I had worked on the ATAC-seq folder, I will go back to that main part from the root (I’ve called it epigenomics_uvic as when the tutorial was followed..
+cd .. # I should be in epigenomics_uvic now
+
+awk 'BEGIN{FS=OFS="\t"} $1=="chr1" {
+    if ($6=="+") {start=$2} else {start=$3}
+    print $4, start
+}' ATAC-seq/annotation/gencode.v24.protein.coding.gene.body.bed > regulatory_elements/gene.starts.tsv
+
+# and check that it worked..
+head regulatory_elements/gene.starts.tsv
+wc -l regulatory_elements/gene.starts.tsv
+
+####
+# Task 5: Download or copy this python script inside the epigenomics_uvic/bin folder. Have a look at the help page of this script to understand how it work…
+
+# copied the script from the link and saved it using nano commands
+# since I am already in epigenomics_uvic I can check it like this:
+# python bin/get.distance.py -h
+# it was not running as it is since I am using python3 so I did a quick modification using nano again, replacing the print syntax
+# nano bin/get.distance.py 
+# I’ll comment the executable check after editing in case it shows a mistake for other people:
+# chmod +x bin/get.distance.py
+# python bin/get.distance.py -h # and now this works for me
+cd regulatory_elements/
+python ../bin/get.distance.py -h # it works now
+python ../bin/get.distance.py --input gene.starts.tsv --start 980000 # perfect, gives me the intended output
+
+###
+# Task 6. For each regulatory element contained in the file regulatory.elements.starts.tsv, retrieve the closest gene and the distance to the closest gene using the python script you created above. Use the command below as a starting point:
+head regulatory.elements.starts.tsv # first row is header
+# the command given doesn’t work because it takes th header row so I skip the first row:
+# my initial code was very inefficient since it was taking a massive amount of time to run…
+# tail -n +2 regulatory.elements.starts.tsv | while read element start; do 
+#    python ../bin/get.distance.py --input gene.starts.tsv --start "$start" | awk -v elem="$element" '{print elem, $0}'
+#done > regulatoryElements.genes.distances.tsv
+# I went back to modify the python file again..
+
+tail -n +2 regulatory.elements.starts.tsv > regulatory.elements.starts.noheader.tsv
+python ../bin/get.distance.py --input gene.starts.tsv --batch regulatory.elements.starts.noheader.tsv > regulatoryElements.genes.distances.tsv
+
+# check if it worked
+head regulatoryElements.genes.distances.tsv
+# here now the “batch” mode works
+
+###
+# Task 7: Use R to compute the mean and the median of the distances stored in regulatoryElements.genes.distances.tsv
+# quick check directly on the terminal, mean distance
+awk '{sum += $4} END {print "Mean distance:", sum/NR}' regulatoryElements.genes.distances.tsv
+
