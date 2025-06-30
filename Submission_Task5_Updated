@@ -166,4 +166,4 @@ head regulatoryElements.genes.distances.tsv
 # Task 7: Use R to compute the mean and the median of the distances stored in regulatoryElements.genes.distances.tsv
 # quick check directly on the terminal, mean distance
 awk '{sum += $4} END {print "Mean distance:", sum/NR}' regulatoryElements.genes.distances.tsv
-
+#
